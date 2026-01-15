@@ -24,3 +24,15 @@ fn line_progress_reporter_writes_updates() {
     assert!(output.contains("scanning: /tmp"));
     assert!(output.contains("dirs: 2"));
 }
+
+#[test]
+fn line_progress_reporter_reports_invalid_zip() {
+    let writer = Cursor::new(Vec::new());
+    let mut reporter = LineProgressReporter::with_writer(writer);
+
+    reporter.on_start(Path::new("/tmp"));
+    reporter.on_invalid_zip(Path::new("/tmp/bad.zip"), "invalid");
+
+    let output = String::from_utf8(reporter.into_inner().into_inner()).unwrap();
+    assert!(output.contains("invalid zip: /tmp/bad.zip"));
+}

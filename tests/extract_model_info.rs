@@ -163,3 +163,31 @@ fn reports_stats_for_scanned_directories() -> Result<(), Box<dyn std::error::Err
 
     Ok(())
 }
+
+#[test]
+fn continues_when_zip_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let bad_dir = temp_dir.path().join("bad");
+    let good_dir = temp_dir.path().join("good");
+
+    fs::create_dir_all(&bad_dir)?;
+    fs::create_dir_all(&good_dir)?;
+
+    fs::write(bad_dir.join("model.safetensors"), b"")?;
+    fs::write(bad_dir.join("broken.zip"), b"not a zip")?;
+
+    fs::write(good_dir.join("model.safetensors"), b"")?;
+    create_zip(
+        &good_dir.join("model.zip"),
+        vec![(MODEL_INFO_FILE_NAME, "ok")],
+    )?;
+
+    let ports = FsPorts::new();
+    let mut progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+
+    assert!(good_dir.join(MODEL_INFO_FILE_NAME).exists());
+    assert_eq!(stats.extracted, 1);
+
+    Ok(())
+}

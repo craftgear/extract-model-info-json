@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::application::{ExtractError, FilePorts, ProgressReporter};
+use crate::application::{ExtractError, FilePorts, ProgressReporter, ZipEntryOutcome};
 use crate::domain::ExtractStats;
 
 pub struct FsPorts;
@@ -52,15 +52,28 @@ impl FilePorts for FsPorts {
         zip_path: &Path,
         entry_name: &str,
         output_dir: &Path,
-    ) -> Result<bool, ExtractError> {
-        let file = fs::File::open(zip_path)?;
-        let mut archive =
-            zip::ZipArchive::new(file).map_err(|err| ExtractError::Message(err.to_string()))?;
+    ) -> Result<ZipEntryOutcome, ExtractError> {
+        let file = match fs::File::open(zip_path) {
+            Ok(file) => file,
+            Err(err) => {
+                // 破損や読み取り不能でも全体処理を止めないため
+                return Ok(ZipEntryOutcome::InvalidZip(err.to_string()));
+            }
+        };
+        let mut archive = match zip::ZipArchive::new(file) {
+            Ok(archive) => archive,
+            Err(err) => {
+                return Ok(ZipEntryOutcome::InvalidZip(err.to_string()));
+            }
+        };
 
         for index in 0..archive.len() {
-            let mut entry = archive
-                .by_index(index)
-                .map_err(|err| ExtractError::Message(err.to_string()))?;
+            let mut entry = match archive.by_index(index) {
+                Ok(entry) => entry,
+                Err(err) => {
+                    return Ok(ZipEntryOutcome::InvalidZip(err.to_string()));
+                }
+            };
 
             if entry.is_dir() {
                 continue;
@@ -71,14 +84,21 @@ impl FilePorts for FsPorts {
 
             if entry_file_name == Some(OsStr::new(entry_name)) {
                 let output_path = output_dir.join(entry_name);
-                let mut output_file = fs::File::create(output_path)?;
-                io::copy(&mut entry, &mut output_file)?;
+                let mut output_file = match fs::File::create(output_path) {
+                    Ok(output_file) => output_file,
+                    Err(err) => {
+                        return Ok(ZipEntryOutcome::InvalidZip(err.to_string()));
+                    }
+                };
+                if let Err(err) = io::copy(&mut entry, &mut output_file) {
+                    return Ok(ZipEntryOutcome::InvalidZip(err.to_string()));
+                }
 
-                return Ok(true);
+                return Ok(ZipEntryOutcome::Extracted);
             }
         }
 
-        Ok(false)
+        Ok(ZipEntryOutcome::NotFound)
     }
 }
 
@@ -94,6 +114,8 @@ impl ProgressReporter for NoProgressReporter {
     fn on_start(&mut self, _root: &Path) {}
 
     fn on_update(&mut self, _stats: &ExtractStats) {}
+
+    fn on_invalid_zip(&mut self, _zip_path: &Path, _reason: &str) {}
 
     fn on_finish(&mut self, _stats: &ExtractStats) {}
 }
@@ -150,6 +172,16 @@ impl<W: Write> ProgressReporter for LineProgressReporter<W> {
         );
         let _ = self.writer.flush();
         self.last_stats = *stats;
+    }
+
+    fn on_invalid_zip(&mut self, zip_path: &Path, reason: &str) {
+        let _ = write!(
+            self.writer,
+            "\rinvalid zip: {} ({})\n",
+            zip_path.display(),
+            reason
+        );
+        let _ = self.writer.flush();
     }
 
     fn on_finish(&mut self, stats: &ExtractStats) {

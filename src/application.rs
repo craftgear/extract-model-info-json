@@ -23,13 +23,21 @@ pub trait FilePorts {
         zip_path: &Path,
         entry_name: &str,
         output_dir: &Path,
-    ) -> Result<bool, ExtractError>;
+    ) -> Result<ZipEntryOutcome, ExtractError>;
 }
 
 pub trait ProgressReporter {
     fn on_start(&mut self, root: &Path);
     fn on_update(&mut self, stats: &ExtractStats);
+    fn on_invalid_zip(&mut self, zip_path: &Path, reason: &str);
     fn on_finish(&mut self, stats: &ExtractStats);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZipEntryOutcome {
+    Extracted,
+    NotFound,
+    InvalidZip(String),
 }
 
 pub fn extract_model_info(
@@ -67,13 +75,20 @@ pub fn extract_model_info(
             for zip_path in zip_files {
                 stats.zip_files_checked += 1;
 
-                let extracted = ports.extract_zip_entry_if_exists(
+                let outcome = ports.extract_zip_entry_if_exists(
                     &zip_path,
                     MODEL_INFO_FILE_NAME,
                     &dir_path,
                 )?;
-                if extracted {
-                    stats.extracted += 1;
+
+                match outcome {
+                    ZipEntryOutcome::Extracted => {
+                        stats.extracted += 1;
+                    }
+                    ZipEntryOutcome::InvalidZip(reason) => {
+                        progress.on_invalid_zip(&zip_path, &reason);
+                    }
+                    ZipEntryOutcome::NotFound => {}
                 }
 
                 progress.on_update(&stats);
