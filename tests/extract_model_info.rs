@@ -33,8 +33,8 @@ fn extracts_model_info_json_from_zip_in_safetensors_dir() -> Result<(), Box<dyn 
     )?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     let extracted = fs::read_to_string(model_dir.join(MODEL_INFO_FILE_NAME))?;
     assert_eq!(extracted, "{\"a\": 1}");
@@ -53,8 +53,8 @@ fn skips_zip_without_model_info_json() -> Result<(), Box<dyn std::error::Error>>
     create_zip(&model_dir.join("model.zip"), vec![("other.json", "{}")])?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     assert!(!model_dir.join(MODEL_INFO_FILE_NAME).exists());
     assert_eq!(stats.extracted, 0);
@@ -82,8 +82,8 @@ fn ignores_zip_in_directory_without_safetensors() -> Result<(), Box<dyn std::err
     )?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     assert!(!no_safe_dir.join(MODEL_INFO_FILE_NAME).exists());
     assert!(safe_dir.join(MODEL_INFO_FILE_NAME).exists());
@@ -106,8 +106,8 @@ fn overwrites_existing_model_info_json() -> Result<(), Box<dyn std::error::Error
     )?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let _stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let _stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     let extracted = fs::read_to_string(model_dir.join(MODEL_INFO_FILE_NAME))?;
     assert_eq!(extracted, "new");
@@ -128,8 +128,8 @@ fn extracts_from_nested_directories() -> Result<(), Box<dyn std::error::Error>> 
     )?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     let extracted = fs::read_to_string(nested_dir.join(MODEL_INFO_FILE_NAME))?;
     assert_eq!(extracted, "nested");
@@ -153,8 +153,8 @@ fn reports_stats_for_scanned_directories() -> Result<(), Box<dyn std::error::Err
     )?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     assert!(stats.directories_scanned >= 2);
     assert_eq!(stats.safetensors_directories, 1);
@@ -183,8 +183,8 @@ fn continues_when_zip_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let ports = FsPorts::new();
-    let mut progress = NoProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, temp_dir.path())?;
+    let progress = NoProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, temp_dir.path())?;
 
     assert!(good_dir.join(MODEL_INFO_FILE_NAME).exists());
     assert_eq!(stats.extracted, 1);

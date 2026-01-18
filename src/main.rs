@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use clap::Parser;
-use extract_model_info_json::{extract_model_info, FsPorts, LineProgressReporter};
+use extract_model_info_json::{extract_model_info, FsPorts, IndicatifProgressReporter};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -23,8 +23,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let ports = FsPorts::new();
-    let mut progress = LineProgressReporter::new();
-    let stats = extract_model_info(&ports, &mut progress, &cli.root_dir)?;
+    let progress = IndicatifProgressReporter::new();
+    let stats = extract_model_info(&ports, &progress, &cli.root_dir)?;
 
     println!(
         "directories: {} safetensors_dirs: {} zip_checked: {} extracted: {}",

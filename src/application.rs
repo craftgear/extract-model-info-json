@@ -1,5 +1,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use rayon::prelude::*;
 
 use crate::domain::{ExtractStats, MODEL_INFO_FILE_NAME};
 
@@ -11,7 +14,7 @@ pub enum ExtractError {
     Message(String),
 }
 
-pub trait FilePorts {
+pub trait FilePorts: Send + Sync {
     fn for_each_directory(
         &self,
         root: &Path,
@@ -26,11 +29,11 @@ pub trait FilePorts {
     ) -> Result<ZipEntryOutcome, ExtractError>;
 }
 
-pub trait ProgressReporter {
-    fn on_start(&mut self, root: &Path);
-    fn on_update(&mut self, stats: &ExtractStats);
-    fn on_invalid_zip(&mut self, zip_path: &Path, reason: &str);
-    fn on_finish(&mut self, stats: &ExtractStats);
+pub trait ProgressReporter: Send + Sync {
+    fn on_start(&self, root: &Path);
+    fn on_update(&self, stats: &ExtractStats);
+    fn on_invalid_zip(&self, zip_path: &Path, reason: &str);
+    fn on_finish(&self, stats: &ExtractStats);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,19 +43,68 @@ pub enum ZipEntryOutcome {
     InvalidZip(String),
 }
 
+struct AtomicExtractStats {
+    directories_scanned: AtomicU64,
+    safetensors_directories: AtomicU64,
+    zip_files_checked: AtomicU64,
+    extracted: AtomicU64,
+}
+
+impl AtomicExtractStats {
+    fn new() -> Self {
+        Self {
+            directories_scanned: AtomicU64::new(0),
+            safetensors_directories: AtomicU64::new(0),
+            zip_files_checked: AtomicU64::new(0),
+            extracted: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> ExtractStats {
+        ExtractStats {
+            directories_scanned: self.directories_scanned.load(Ordering::Relaxed),
+            safetensors_directories: self.safetensors_directories.load(Ordering::Relaxed),
+            zip_files_checked: self.zip_files_checked.load(Ordering::Relaxed),
+            extracted: self.extracted.load(Ordering::Relaxed),
+        }
+    }
+
+    fn increment_directories(&self) {
+        self.directories_scanned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_safetensors_directories(&self) {
+        self.safetensors_directories.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_zip_files_checked(&self) {
+        self.zip_files_checked.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_extracted(&self) {
+        self.extracted.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub fn extract_model_info(
     ports: &dyn FilePorts,
-    progress: &mut dyn ProgressReporter,
+    progress: &dyn ProgressReporter,
     root: &Path,
 ) -> Result<ExtractStats, ExtractError> {
-    let mut stats = ExtractStats::default();
+    let stats = AtomicExtractStats::new();
 
     progress.on_start(root);
 
+    let mut directories = Vec::new();
     ports.for_each_directory(root, &mut |dir_path| {
-        stats.directories_scanned += 1;
+        directories.push(dir_path);
+        Ok::<(), ExtractError>(())
+    })?;
 
-        let files = ports.list_files_in_dir(&dir_path)?;
+    directories.par_iter().try_for_each(|dir_path| {
+        stats.increment_directories();
+
+        let files = ports.list_files_in_dir(dir_path)?;
         let mut has_safetensors = false;
         let mut zip_files = Vec::new();
 
@@ -69,21 +121,22 @@ pub fn extract_model_info(
         }
 
         if has_safetensors {
-            stats.safetensors_directories += 1;
-            progress.on_update(&stats);
+            stats.increment_safetensors_directories();
+            let snapshot = stats.snapshot();
+            progress.on_update(&snapshot);
 
             for zip_path in zip_files {
-                stats.zip_files_checked += 1;
+                stats.increment_zip_files_checked();
 
                 let outcome = ports.extract_zip_entry_if_exists(
                     &zip_path,
                     MODEL_INFO_FILE_NAME,
-                    &dir_path,
+                    dir_path,
                 )?;
 
                 match outcome {
                     ZipEntryOutcome::Extracted => {
-                        stats.extracted += 1;
+                        stats.increment_extracted();
                     }
                     ZipEntryOutcome::InvalidZip(reason) => {
                         progress.on_invalid_zip(&zip_path, &reason);
@@ -91,16 +144,19 @@ pub fn extract_model_info(
                     ZipEntryOutcome::NotFound => {}
                 }
 
-                progress.on_update(&stats);
+                let snapshot = stats.snapshot();
+                progress.on_update(&snapshot);
             }
         } else {
-            progress.on_update(&stats);
+            let snapshot = stats.snapshot();
+            progress.on_update(&snapshot);
         }
 
-        Ok(())
+        Ok::<(), ExtractError>(())
     })?;
 
-    progress.on_finish(&stats);
+    let final_stats = stats.snapshot();
+    progress.on_finish(&final_stats);
 
-    Ok(stats)
+    Ok(final_stats)
 }

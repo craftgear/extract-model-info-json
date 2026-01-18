@@ -2,6 +2,11 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use console::style;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use walkdir::WalkDir;
 
 use crate::application::{ExtractError, FilePorts, ProgressReporter, ZipEntryOutcome};
@@ -111,19 +116,67 @@ impl NoProgressReporter {
 }
 
 impl ProgressReporter for NoProgressReporter {
-    fn on_start(&mut self, _root: &Path) {}
+    fn on_start(&self, _root: &Path) {}
 
-    fn on_update(&mut self, _stats: &ExtractStats) {}
+    fn on_update(&self, _stats: &ExtractStats) {}
 
-    fn on_invalid_zip(&mut self, _zip_path: &Path, _reason: &str) {}
+    fn on_invalid_zip(&self, _zip_path: &Path, _reason: &str) {}
 
-    fn on_finish(&mut self, _stats: &ExtractStats) {}
+    fn on_finish(&self, _stats: &ExtractStats) {}
 }
 
-pub struct LineProgressReporter<W: Write> {
+pub struct IndicatifProgressReporter {
+    bar: ProgressBar,
+}
+
+impl IndicatifProgressReporter {
+    pub fn new() -> Self {
+        Self::with_draw_target(ProgressDrawTarget::stderr())
+    }
+
+    pub fn with_draw_target(draw_target: ProgressDrawTarget) -> Self {
+        let bar = ProgressBar::with_draw_target(None, draw_target);
+        let style = ProgressStyle::with_template("{spinner:.yellow} {msg:.blue}")
+            .expect("invalid progress style template")
+            .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷");
+        bar.set_style(style);
+        bar.enable_steady_tick(Duration::from_millis(120));
+
+        Self { bar }
+    }
+}
+
+impl ProgressReporter for IndicatifProgressReporter {
+    fn on_start(&self, root: &Path) {
+        let _ = self
+            .bar
+            .println(format!("scanning: {}", root.display()));
+        self.bar.set_message(format_stats(&ExtractStats::default()));
+    }
+
+    fn on_update(&self, stats: &ExtractStats) {
+        self.bar.set_message(format_stats(stats));
+    }
+
+    fn on_invalid_zip(&self, zip_path: &Path, reason: &str) {
+        let message = format!("invalid zip: {} ({})", zip_path.display(), reason);
+        let _ = self.bar.println(style(message).red().to_string());
+    }
+
+    fn on_finish(&self, stats: &ExtractStats) {
+        self.bar.disable_steady_tick();
+        self.bar.finish_with_message(format_stats(stats));
+    }
+}
+
+struct LineProgressState<W: Write> {
     writer: W,
     last_stats: ExtractStats,
     started: bool,
+}
+
+pub struct LineProgressReporter<W: Write + Send> {
+    state: Mutex<LineProgressState<W>>,
 }
 
 impl LineProgressReporter<std::io::Stderr> {
@@ -132,61 +185,113 @@ impl LineProgressReporter<std::io::Stderr> {
     }
 }
 
-impl<W: Write> LineProgressReporter<W> {
+impl<W: Write + Send> LineProgressReporter<W> {
     pub fn with_writer(writer: W) -> Self {
         Self {
-            writer,
-            last_stats: ExtractStats::default(),
-            started: false,
+            state: Mutex::new(LineProgressState {
+                writer,
+                last_stats: ExtractStats::default(),
+                started: false,
+            }),
         }
     }
 
     pub fn into_inner(self) -> W {
-        self.writer
+        let state = match self.state.into_inner() {
+            Ok(state) => state,
+            Err(err) => err.into_inner(),
+        };
+        state.writer
     }
 }
 
-impl<W: Write> ProgressReporter for LineProgressReporter<W> {
-    fn on_start(&mut self, root: &Path) {
-        if self.started {
+impl<W: Write + Send> ProgressReporter for LineProgressReporter<W> {
+    fn on_start(&self, root: &Path) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(err) => err.into_inner(),
+        };
+
+        if state.started {
             return;
         }
 
-        let _ = writeln!(self.writer, "scanning: {}", root.display());
-        let _ = self.writer.flush();
-        self.started = true;
+        let _ = writeln!(state.writer, "scanning: {}", root.display());
+        let _ = state.writer.flush();
+        state.started = true;
     }
 
-    fn on_update(&mut self, stats: &ExtractStats) {
-        if *stats == self.last_stats {
+    fn on_update(&self, stats: &ExtractStats) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(err) => err.into_inner(),
+        };
+
+        if *stats == state.last_stats {
             return;
         }
 
         let _ = write!(
-            self.writer,
+            state.writer,
             "\rdirs: {} safetensors: {} zip: {} extracted: {}",
             stats.directories_scanned,
             stats.safetensors_directories,
             stats.zip_files_checked,
             stats.extracted
         );
-        let _ = self.writer.flush();
-        self.last_stats = *stats;
+        let _ = state.writer.flush();
+        state.last_stats = *stats;
     }
 
-    fn on_invalid_zip(&mut self, zip_path: &Path, reason: &str) {
+    fn on_invalid_zip(&self, zip_path: &Path, reason: &str) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(err) => err.into_inner(),
+        };
+
         let _ = write!(
-            self.writer,
-            "\rinvalid zip: {} ({})\n",
+            state.writer,
+            "\ninvalid zip: {} ({})\n",
             zip_path.display(),
             reason
         );
-        let _ = self.writer.flush();
+        let _ = state.writer.flush();
     }
 
-    fn on_finish(&mut self, stats: &ExtractStats) {
+    fn on_finish(&self, stats: &ExtractStats) {
         self.on_update(stats);
-        let _ = writeln!(self.writer);
-        let _ = self.writer.flush();
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(err) => err.into_inner(),
+        };
+        let _ = writeln!(state.writer);
+        let _ = state.writer.flush();
+    }
+}
+
+fn format_stats(stats: &ExtractStats) -> String {
+    format!(
+        "dirs: {} zip: {} extracted: {}",
+        stats.directories_scanned,
+        stats.zip_files_checked,
+        stats.extracted
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_stats;
+    use crate::domain::ExtractStats;
+
+    #[test]
+    fn format_stats_shows_dirs_zip_extracted_only() {
+        let stats = ExtractStats {
+            directories_scanned: 1,
+            safetensors_directories: 99,
+            zip_files_checked: 2,
+            extracted: 3,
+        };
+
+        assert_eq!(format_stats(&stats), "dirs: 1 zip: 2 extracted: 3");
     }
 }
